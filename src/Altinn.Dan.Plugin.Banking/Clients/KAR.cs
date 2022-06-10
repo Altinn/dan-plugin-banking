@@ -9,7 +9,7 @@ namespace Altinn.Dan.Plugin.Banking.Clients
 {
     public partial class KAR
     {
-        public async Task<KARResponse> Get(string ssn, string mpToken, string fromDate, string toDate)
+        public async Task<KARResponse> Get(string ssn, string mpToken, string fromDate, string toDate, Guid accountInfoRequestId, Guid correlationId)
         {
             _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", mpToken); 
             var header = _httpClient.DefaultRequestHeaders.Authorization;
@@ -17,7 +17,7 @@ namespace Altinn.Dan.Plugin.Banking.Clients
             if (!header.Scheme.Equals("bearer", StringComparison.OrdinalIgnoreCase))
                 throw new Exception($"Invalid auth header {header.Scheme} found for {ssn} in KAR interface");
 
-            return MapToInternal(await GetCustomerRelationAsync(header.Parameter, ssn, Guid.NewGuid(), "Prosjekt OED", Guid.NewGuid(), fromDate, toDate));
+            return MapToInternal(await GetCustomerRelationAsync(header.Parameter, ssn, correlationId, "Prosjekt OED", accountInfoRequestId, fromDate, toDate));
         }
 
         private static KARResponse MapToInternal(ListCustomerRelation listCustomerRelation)

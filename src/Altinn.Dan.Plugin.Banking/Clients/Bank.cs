@@ -3,6 +3,7 @@ using Altinn.Dan.Plugin.Banking.Exceptions;
 using Altinn.Dan.Plugin.Banking.Models;
 using Altinn.Dan.Plugin.Banking.Utils;
 using Jose;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -67,23 +68,25 @@ namespace Altinn.Dan.Plugin.Banking.Clients
             }
         }
 
-        public async Task<BankResponse> Get(string ssn, string bankList, ApplicationSettings settings, DateTimeOffset? fromDate, DateTimeOffset? toDate)
+        public async Task<BankResponse> Get(string ssn, string bankList, ApplicationSettings settings, DateTimeOffset? fromDate, DateTimeOffset? toDate, Guid accopuntRequestReferenceId, ILogger logger)
         {
             _danSettings = settings;
-            Configure();
+            Configure();           
 
             BankResponse bankResponse = new BankResponse() { BankAccounts = new List<BankInfo>() };
             foreach (string bank in bankList.Split(';'))
             {
+                var corrId = Guid.NewGuid();
                 string orgnr = bank.Split(':')[0];
                 string name = bank.Split(':')[1];
                 BankInfo bankInfo = null;
                 try
                 {
-                    bankInfo = await InvokeBank(ssn, orgnr, fromDate, toDate);
+                    bankInfo = await InvokeBank(ssn, orgnr, fromDate, toDate, accopuntRequestReferenceId, corrId);
                 }
                 catch (Exception e)
-                {                   
+                {
+                    logger.LogBankingError(accopuntRequestReferenceId, corrId, ssn.Substring(0, 6), name, e.Message);
                     bankInfo = new BankInfo() { Exception = new Exception(e.Message) };
                 }
 
@@ -95,7 +98,7 @@ namespace Altinn.Dan.Plugin.Banking.Clients
             return bankResponse;
         }
 
-        private async Task<BankInfo> InvokeBank(string ssn, string orgnr, DateTimeOffset? fromDate, DateTimeOffset? toDate)
+        private async Task<BankInfo> InvokeBank(string ssn, string orgnr, DateTimeOffset? fromDate, DateTimeOffset? toDate, Guid accountInfoId, Guid correlationId)
         {
             if (!_bankConfigs.ContainsKey(orgnr))
                 return new BankInfo { IsImplemented = false };
@@ -108,24 +111,25 @@ namespace Altinn.Dan.Plugin.Banking.Clients
             BaseUrl = bankConfig.Client.BaseAddress.ToString();
             try
             {
-                await this.ListAccountsAsync(Guid.NewGuid(), Guid.NewGuid(), "OED", ssn, null, null, null, fromDate, toDate);
+                await this.ListAccountsAsync(accountInfoId, correlationId, "OED", ssn, null, null, null, fromDate, toDate);
             }
             catch (DecryptionCompletedDummyException)
             {
-                return await GetAccountDetails(_accounts);
+                return await GetAccountDetails(_accounts, correlationId, accountInfoId);
             }
 
             throw new Exception($"Code bug calling list accounts for {ssn}");
         }
 
-        private async Task<BankInfo> GetAccountDetails(Accounts accounts)
+        private async Task<BankInfo> GetAccountDetails(Accounts accounts, Guid correlationId, Guid accountInfoId)
         {
             BankInfo bankInfo = new BankInfo() { Accounts = new List<Altinn.Dan.Plugin.Banking.Models.Account>() };
+
             foreach (Account account in accounts.Accounts1)
             {
                 try
                 {
-                    await this.ShowAccountByIdAsync(account.AccountReference, Guid.NewGuid(), Guid.NewGuid(), "OED", null, null, null, null);
+                    await this.ShowAccountByIdAsync(account.AccountReference, accountInfoId, correlationId, "OED", null, null, null, null);
                 }
                 catch (DecryptionCompletedDummyException)
                 {
@@ -133,7 +137,7 @@ namespace Altinn.Dan.Plugin.Banking.Clients
                     var debit = _details.Account.Balances.FirstOrDefault(b => b.Type == BalanceType.AvailableBalance && b.CreditDebitIndicator == CreditOrDebit.Debit)?.Amount ?? 0;
                     try
                     {
-                        await this.ListTransactionsAsync(account.AccountReference, Guid.NewGuid(), Guid.NewGuid(), "OED", null, null, DateTime.Now.AddMonths(-3), DateTime.Now);
+                        await this.ListTransactionsAsync(account.AccountReference, accountInfoId, correlationId, "OED", null, null, DateTime.Now.AddMonths(-3), DateTime.Now);
                     }
                     catch (DecryptionCompletedDummyException)
                     {

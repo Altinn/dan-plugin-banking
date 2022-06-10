@@ -1,5 +1,6 @@
 using Altinn.Dan.Plugin.Banking.Clients;
 using Altinn.Dan.Plugin.Banking.Config;
+using Altinn.Dan.Plugin.Banking.Models;
 using Altinn.Dan.Plugin.Banking.Utils;
 using Azure.Core.Serialization;
 using Microsoft.AspNetCore.Mvc;
@@ -26,6 +27,7 @@ namespace Altinn.Dan.Plugin.Banking
         private ILogger _logger;
         private HttpClient _client;
         private ApplicationSettings _settings;
+        private Guid accountReferenceRequestId;
 
         public Main(IHttpClientFactory httpClientFactory, IOptions<ApplicationSettings> settings)
         {
@@ -41,6 +43,9 @@ namespace Altinn.Dan.Plugin.Banking
             _logger = context.GetLogger(context.FunctionDefinition.Name);
             _logger.LogInformation("Running func 'BankTransaksjoner'");
 
+            //Set the overall request context id for the client request so it can be traced from client to DAN to all banks in case of errors
+            accountReferenceRequestId = new Guid(context.InvocationId);
+
             var requestBody = await new StreamReader(req.Body).ReadToEndAsync();
             var evidenceHarvesterRequest = JsonConvert.DeserializeObject<EvidenceHarvesterRequest>(requestBody);
 
@@ -55,27 +60,36 @@ namespace Altinn.Dan.Plugin.Banking
             var mpToken = GetToken();
             var kar = new KAR(_client);
             kar.BaseUrl = _settings.KarUrl;
+            KARResponse response = null;
+            Guid KARcorrelationId = Guid.NewGuid();
+            string toDate = DateTime.Now.ToString("yyyy-MM-dd");
+            string fromDate = DateTime.Now.AddMonths(-3).ToString("yyyy-MM-dd");
+
 
             try
             {
-                string toDate = DateTime.Now.ToString("yyyy-MM-dd");
-                string fromDate = DateTime.Now.AddMonths(-3).ToString("yyyy-MM-dd");
+                response = await kar.Get(evidenceHarvesterRequest.OrganizationNumber, mpToken, fromDate, toDate, accountReferenceRequestId, KARcorrelationId);
 
-                var response = await kar.Get(evidenceHarvesterRequest.OrganizationNumber, mpToken, fromDate, toDate);
+            } catch (Exception ex)
+            {
+                _logger.LogBankingError(accountReferenceRequestId, KARcorrelationId, evidenceHarvesterRequest.SubjectParty.ToString(), "KAR", ex.Message);
+                throw new EvidenceSourceTransientException(Banking.Metadata.ERROR_CCR_UPSTREAM_ERROR, "Could not retrieve information from KAR");
+            }
 
-                if (response.Banks.Count == 0)
-                    return new List<EvidenceValue>();
+            if (response == null || response.Banks.Count == 0)
+                return new List<EvidenceValue>();
 
-                string bankList = null;
+            try
+            { 
+                string bankList = "";
                 foreach (var a in response.Banks)
                 {
                     bankList += $"{a.OrganizationID}:{a.BankName};";
                 }
 
                 var banks = bankList.TrimEnd(';');
-
                 var bank = new Bank(_client);
-                var bankResult = await bank.Get(OEDUtils.MapSsn(evidenceHarvesterRequest.OrganizationNumber, "bank"), banks, _settings, DateTimeOffset.Parse(fromDate), DateTimeOffset.Parse(toDate));
+                var bankResult = await bank.Get(OEDUtils.MapSsn(evidenceHarvesterRequest.OrganizationNumber, "bank"), banks, _settings, DateTimeOffset.Parse(fromDate), DateTimeOffset.Parse(toDate), accountReferenceRequestId, _logger);
                 
                 var ecb = new EvidenceBuilder(new Metadata(), "Banktransaksjoner");
                 ecb.AddEvidenceValue("default", JsonConvert.SerializeObject(bankResult));
@@ -83,9 +97,8 @@ namespace Altinn.Dan.Plugin.Banking
                 return ecb.GetEvidenceValues();
             } catch (Exception e)
             {
-                _logger.LogError(String.Format("Banktransaksjoner failed for {0}, error {1}",
-                    evidenceHarvesterRequest.OrganizationNumber.Length == 11 ? evidenceHarvesterRequest.OrganizationNumber.Substring(0, 6) : evidenceHarvesterRequest.OrganizationNumber, e.Message));
-                throw new EvidenceSourceTransientException(Altinn.Dan.Plugin.Banking.Metadata.ERROR_CCR_UPSTREAM_ERROR, "Could not retrieve bank transactions");
+                _logger.LogBankingError(accountReferenceRequestId, null, evidenceHarvesterRequest.SubjectParty.ToString(), "", e.Message);
+                throw new EvidenceSourceTransientException(Banking.Metadata.ERROR_CCR_UPSTREAM_ERROR, "Could not retrieve bank transactions");
 
             }
         }

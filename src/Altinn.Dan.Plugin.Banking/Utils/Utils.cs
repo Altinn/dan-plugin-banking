@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,6 +9,11 @@ namespace Altinn.Dan.Plugin.Banking.Utils
 {
     public static class OEDUtils
     {
+
+        public static void LogBankingError(this ILogger logger, Guid? accountRequestId, Guid? correlationId, string user, string target, string error)
+        {
+           logger.LogError("dan-plugin-banking error: target={0}, accountReferenceRequestId={0}, correlationId={1}, user={2}, error={3}", target, accountRequestId, correlationId, user, error);
+        }
         public static string MapSsn(string ssn, string externalSource)
         {
             // todo Make this table driven and more maintainable when we have more interfaces and test users
